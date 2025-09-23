@@ -241,7 +241,7 @@ function convertDatabase() {
 
                     if (!database[manufacturer][deviceName]) {
                         database[manufacturer][deviceName] = {
-                            device_icon: "",
+                            device_icon: param.device_icon || "none",
                             midi_thru: "",
                             midi_in: "",
                             midi_clock: "",
