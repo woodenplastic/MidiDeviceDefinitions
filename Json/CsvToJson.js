@@ -232,8 +232,8 @@ function convertDatabase() {
                 const deviceData = parseCSV(csvContent);
 
                 if (deviceData.length > 0) {
-                    const manufacturer = deviceData[0].manufacturer.toLowerCase().replace(/\s+/g, '_');
-                    const deviceName = deviceData[0].device.toLowerCase().replace(/\s+/g, '_');
+                    const manufacturer = deviceData[0].manufacturer.replace(/\s+/g, '_');
+                    const deviceName = deviceData[0].device.replace(/\s+/g, '_');
 
                     if (!database[manufacturer]) {
                         database[manufacturer] = {};
