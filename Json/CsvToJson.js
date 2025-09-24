@@ -199,7 +199,8 @@ function parseCSV(csvText) {
             },
             orientation: fields[13] || null,
             notes: fields[14] || null,
-            usage: fields[15] || null
+            usage: fields[15] || null,
+            icon: fields[16] || "none"
         };
     });
 }
@@ -232,8 +233,8 @@ function convertDatabase() {
                 const deviceData = parseCSV(csvContent);
 
                 if (deviceData.length > 0) {
-                    const manufacturer = deviceData[0].manufacturer.replace(/\s+/g, '_');
-                    const deviceName = deviceData[0].device.replace(/\s+/g, '_');
+                    const manufacturer = deviceData[0].manufacturer.toLowerCase().replace(/\s+/g, '_');
+                    const deviceName = deviceData[0].device.toLowerCase().replace(/\s+/g, '_');
 
                     if (!database[manufacturer]) {
                         database[manufacturer] = {};
@@ -241,7 +242,7 @@ function convertDatabase() {
 
                     if (!database[manufacturer][deviceName]) {
                         database[manufacturer][deviceName] = {
-                            device_icon: param.device_icon || "none",
+                            device_icon: deviceData[0].icon,
                             midi_thru: "",
                             midi_in: "",
                             midi_clock: "",
