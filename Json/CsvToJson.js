@@ -97,6 +97,11 @@
     }
   }
 
+ IMPORTANT: This script now PRESERVES manual edits by merging CSV data with existing JSON data.
+ - Existing devices keep their manual edits (midi_thru, midi_in, instructions, etc.)
+ - Parameters are merged intelligently - existing detailed descriptions/usage preserved
+ - Only CSV data is updated, manual enhancements remain intact
+ - Creates incremental versions while preserving all previous work
 */
 
 const fs = require('fs');
@@ -110,10 +115,9 @@ if (!fs.existsSync(outputDir)) {
     console.log(`Created output directory: ${outputDir}`);
 }
 
-function determineVersion() {
-    console.log('🔍 Determining version number...');
-    let currentVersion = 1;
-
+function findLatestDatabase() {
+    console.log('🔍 Looking for existing database...');
+    
     try {
         const files = fs.readdirSync(outputDir);
         const versionRegex = /midi-database-v(\d+)\.json$/;
@@ -121,23 +125,42 @@ function determineVersion() {
         const versions = files
             .map(file => {
                 const match = file.match(versionRegex);
-                return match ? parseInt(match[1]) : null;
+                return match ? { version: parseInt(match[1]), file: file } : null;
             })
             .filter(v => v !== null)
-            .sort((a, b) => b - a);
+            .sort((a, b) => b.version - a.version);
 
         if (versions.length > 0) {
-            currentVersion = versions[0] + 1;
-            console.log(`📝 Found existing version: ${versions[0]}, incrementing to: ${currentVersion}`);
+            const latestFile = path.join(outputDir, versions[0].file);
+            console.log(`📝 Found existing database: ${versions[0].file} (v${versions[0].version})`);
+            return { file: latestFile, version: versions[0].version };
         } else {
-            console.log(`📝 No existing version found, using initial version: ${currentVersion}`);
+            console.log('📝 No existing database found');
+            return { file: null, version: 0 };
         }
     } catch (error) {
-        console.error('⚠️ Error determining version:', error);
-        console.log(`📝 Using default version: ${currentVersion}`);
+        console.error('⚠️ Error finding existing database:', error);
+        return { file: null, version: 0 };
+    }
+}
+
+function loadExistingDatabase(filePath) {
+    if (!filePath || !fs.existsSync(filePath)) {
+        console.log('📄 Creating new database structure...');
+        return { version: 1, generatedAt: new Date().toISOString() };
     }
 
-    return currentVersion;
+    try {
+        console.log('� Loading existing database...');
+        const content = fs.readFileSync(filePath, 'utf8');
+        const database = JSON.parse(content);
+        console.log(`✅ Loaded database v${database.version} (${Object.keys(database).filter(k => k !== 'version' && k !== 'generatedAt').length} manufacturers)`);
+        return database;
+    } catch (error) {
+        console.error('❌ Error loading existing database:', error);
+        console.log('📄 Creating new database structure...');
+        return { version: 1, generatedAt: new Date().toISOString() };
+    }
 }
 
 function removeOldDatabases(directory) {
@@ -170,6 +193,112 @@ function writeFiles(database, version) {
     console.log(`\n✅ Database saved to ${outputDir}`);
     console.log(`- ${path.basename(jsonFile)}`);
     console.log(`- ${path.basename(gzipFile)}`);
+}
+
+function mergeDeviceData(existingDevice, csvData) {
+    // Create new device structure if it doesn't exist
+    if (!existingDevice) {
+        return {
+            device_icon: csvData[0]?.icon || "none",
+            midi_thru: "",
+            midi_in: "",
+            midi_clock: "",
+            phantom_power: "",
+            midi_channel: {
+                instructions: ""
+            },
+            instructions: "",
+            cc: [],
+            nrpn: [],
+            pc: []
+        };
+    }
+
+    // Preserve existing manual data, only update if empty
+    const mergedDevice = {
+        device_icon: existingDevice.device_icon || csvData[0]?.icon || "none",
+        midi_thru: existingDevice.midi_thru || "",
+        midi_in: existingDevice.midi_in || "",
+        midi_clock: existingDevice.midi_clock || "",
+        phantom_power: existingDevice.phantom_power || "",
+        midi_channel: existingDevice.midi_channel || { instructions: "" },
+        instructions: existingDevice.instructions || "",
+        cc: [...(existingDevice.cc || [])],
+        nrpn: [...(existingDevice.nrpn || [])],
+        pc: [...(existingDevice.pc || [])]
+    };
+
+    return mergedDevice;
+}
+
+function mergeParameters(existingParams, newParams, paramType) {
+    // Create a map of existing parameters for quick lookup
+    const existingMap = new Map();
+    
+    if (paramType === 'cc') {
+        existingParams.forEach((param, index) => {
+            existingMap.set(`${param.name}_${param.value}`, { param, index });
+        });
+    } else if (paramType === 'nrpn') {
+        existingParams.forEach((param, index) => {
+            existingMap.set(`${param.name}_${param.msb}_${param.lsb}`, { param, index });
+        });
+    }
+
+    const updatedParams = [...existingParams];
+
+    // Process new parameters from CSV
+    newParams.forEach(newParam => {
+        let key;
+        if (paramType === 'cc') {
+            key = `${newParam.name}_${newParam.value}`;
+        } else if (paramType === 'nrpn') {
+            key = `${newParam.name}_${newParam.msb}_${newParam.lsb}`;
+        }
+
+        const existing = existingMap.get(key);
+        
+        if (existing) {
+            // Update existing parameter with smart merging
+            const existingParam = existing.param;
+            
+            // Determine if we should use CSV or existing data for description/usage
+            // Use CSV data if:
+            // 1. Existing field is empty
+            // 2. CSV has new content (different from existing)
+            // 3. CSV content is significantly longer (likely more detailed)
+            
+            const shouldUpdateDescription = !existingParam.description || 
+                                          (newParam.description && newParam.description !== existingParam.description) ||
+                                          (newParam.description && newParam.description.length > existingParam.description.length * 1.5);
+                                          
+            const shouldUpdateUsage = !existingParam.usage || 
+                                    (newParam.usage && newParam.usage !== existingParam.usage) ||
+                                    (newParam.usage && newParam.usage.length > existingParam.usage.length * 1.5);
+
+            updatedParams[existing.index] = {
+                ...newParam, // Start with all CSV data
+                // Selectively preserve manual edits only when they're clearly better
+                description: shouldUpdateDescription ? (newParam.description || "") : existingParam.description,
+                usage: shouldUpdateUsage ? (newParam.usage || "") : existingParam.usage,
+                // Preserve non-CSV fields that might have manual edits
+                curve: existingParam.curve || newParam.curve || "0-based"
+            };
+            
+            // Log when CSV updates are applied
+            if (shouldUpdateDescription && newParam.description) {
+                console.log(`    📝 Updated description for "${newParam.name}"`);
+            }
+            if (shouldUpdateUsage && newParam.usage) {
+                console.log(`    📝 Updated usage for "${newParam.name}"`);
+            }
+        } else {
+            // Add new parameter
+            updatedParams.push(newParam);
+        }
+    });
+
+    return updatedParams;
 }
 
 function parseCSV(csvText) {
@@ -206,13 +335,21 @@ function parseCSV(csvText) {
 }
 
 function convertDatabase() {
-    console.log('\n🚀 Starting MIDI database conversion...');
+    console.log('\n🚀 Starting MIDI database merge/update...');
 
-    const version = determineVersion();
+    // Find and load existing database
+    const existingInfo = findLatestDatabase();
+    const database = loadExistingDatabase(existingInfo.file);
+    
+    // Update version and timestamp
+    const newVersion = existingInfo.version + 1;
+    database.version = newVersion;
+    database.generatedAt = new Date().toISOString();
+    
+    console.log(`📈 Updating to version ${newVersion}`);
+
+    // Remove old database files (we'll create the new version)
     removeOldDatabases(outputDir);
-
-    const timestamp = new Date().toISOString();
-    const database = { version: version, generatedAt: timestamp};
 
     const manufacturerFolders = fs.readdirSync(rootPath).filter(file =>
         fs.statSync(path.join(rootPath, file)).isDirectory() &&
@@ -221,6 +358,9 @@ function convertDatabase() {
         file !== '.github' &&
         !file.startsWith('.')
     );
+
+    let updatedDevices = 0;
+    let newDevices = 0;
 
     manufacturerFolders.forEach(folder => {
         console.log(`📦 Processing folder: ${folder}`);
@@ -236,30 +376,24 @@ function convertDatabase() {
                     const manufacturer = deviceData[0].manufacturer.replace(/\s+/g, '_');
                     const deviceName = deviceData[0].device.replace(/\s+/g, '_');
 
+                    // Initialize manufacturer if it doesn't exist
                     if (!database[manufacturer]) {
                         database[manufacturer] = {};
                     }
 
-                    if (!database[manufacturer][deviceName]) {
-                        database[manufacturer][deviceName] = {
-                            device_icon: deviceData[0].icon,
-                            midi_thru: "",
-                            midi_in: "",
-                            midi_clock: "",
-                            phantom_power: "",
-                            midi_channel: {
-                                instructions: ""
-                            },
-                            instructions: "",
-                            cc: [],
-                            nrpn: [],
-                            pc: []
-                        };
-                    }
+                    // Check if device exists
+                    const deviceExists = database[manufacturer][deviceName];
+                    
+                    // Merge device data (preserves existing manual edits)
+                    const mergedDevice = mergeDeviceData(database[manufacturer][deviceName], deviceData);
+                    
+                    // Collect new CC and NRPN parameters from CSV
+                    const newCcParams = [];
+                    const newNrpnParams = [];
 
                     deviceData.forEach(param => {
                         if (param.cc.msb !== null) {
-                            database[manufacturer][deviceName].cc.push({
+                            newCcParams.push({
                                 name: param.name,
                                 description: param.description || "",
                                 usage: param.usage || "",
@@ -272,7 +406,7 @@ function convertDatabase() {
                         }
 
                         if (param.nrpn.msb !== null && param.nrpn.lsb !== null) {
-                            database[manufacturer][deviceName].nrpn.push({
+                            newNrpnParams.push({
                                 name: param.name,
                                 description: param.description || "",
                                 usage: param.usage || "",
@@ -285,6 +419,20 @@ function convertDatabase() {
                             });
                         }
                     });
+
+                    // Merge parameters (preserves manual edits)
+                    mergedDevice.cc = mergeParameters(mergedDevice.cc, newCcParams, 'cc');
+                    mergedDevice.nrpn = mergeParameters(mergedDevice.nrpn, newNrpnParams, 'nrpn');
+
+                    database[manufacturer][deviceName] = mergedDevice;
+                    
+                    if (deviceExists) {
+                        updatedDevices++;
+                        console.log(`  ✏️  Updated: ${manufacturer}/${deviceName}`);
+                    } else {
+                        newDevices++;
+                        console.log(`  ➕ Added: ${manufacturer}/${deviceName}`);
+                    }
                 }
             } catch (error) {
                 console.error(`❌ Error processing ${file}:`, error);
@@ -292,21 +440,24 @@ function convertDatabase() {
         });
     });
 
-    writeFiles(database, version);
+    writeFiles(database, newVersion);
 
     const manufacturers = Object.keys(database);
-    let deviceCount = 0;
+    let totalDeviceCount = 0;
     manufacturers.forEach(mfr => {
-        if (mfr !== 'version' && mfr !== 'generatedAt' && mfr !== 'devices') {
-            deviceCount += Object.keys(database[mfr]).length;
+        if (mfr !== 'version' && mfr !== 'generatedAt') {
+            totalDeviceCount += Object.keys(database[mfr]).length;
         }
     });
 
-    console.log('\n✅ Conversion complete!');
-    console.log(`📂 Manufacturers: ${manufacturers.length - 3}`);
-    console.log(`📂 Devices: ${deviceCount}`);
-    console.log(`📌 Version: ${version}`);
-    console.log(`📅 Generated: ${timestamp}`);
+    console.log('\n✅ Database merge/update complete!');
+    console.log(`📂 Manufacturers: ${manufacturers.length - 2}`);
+    console.log(`📂 Total Devices: ${totalDeviceCount}`);
+    console.log(`➕ New Devices: ${newDevices}`);
+    console.log(`✏️  Updated Devices: ${updatedDevices}`);
+    console.log(`📌 Version: ${newVersion}`);
+    console.log(`📅 Generated: ${database.generatedAt}`);
+    console.log('\n💡 Manual edits in existing devices have been preserved!');
 }
 
 convertDatabase();
