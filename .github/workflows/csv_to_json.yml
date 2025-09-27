@@ -1,17 +1,7 @@
 name: Convert CSV to JSON
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - 'CSV/**/*.csv'  # Only run when CSV files change
-  pull_request:
-    branches:
-      - main
-    paths:
-      - 'CSV/**/*.csv'  # Only run when CSV files change
-  workflow_dispatch:  # Allow manual triggering regardless of changes
+  workflow_dispatch:  # Allow manual triggering only
 
 jobs:
   convert:
